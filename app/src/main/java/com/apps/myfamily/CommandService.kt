@@ -85,6 +85,11 @@ class CommandService : Service() {
                             showCustomNotification(title, message)
                             Log.d("CmdService", "Showing notification with title: $title, message: $message")
                         }
+
+                        "lock_with_message" -> {
+                            val message = params.optString("message", "Layar akan dikunci")
+                            showWarningUI(applicationContext, message)
+                        }
                     }
 
                 } catch (e: Exception) {
@@ -213,4 +218,17 @@ class CommandService : Service() {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(1, notification)
     }
+
+    fun showWarningUI(context: Context, message: String) {
+        val intent = Intent(context, WarningActivity::class.java).apply {
+            putExtra("message", message)
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+            )
+        }
+        context.startActivity(intent)
+    }    
+    
 }
