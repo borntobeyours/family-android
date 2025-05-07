@@ -90,7 +90,9 @@ class CommandService : Service() {
                         "lock_with_message" -> {
                             val message = params.optString("message", "Layar akan dikunci")
                             Log.d("CommandService", "Processing lock_with_message. Message: ${message}")
-                            showWarningUI(applicationContext, message)
+                            // showWarningUI(applicationContext, message)
+                            showWarningViaNotification(applicationContext, message)
+
                         }
                     }
 
@@ -232,5 +234,44 @@ class CommandService : Service() {
         }
         context.applicationContext.startActivity(intent)
     }
+
+    private fun showWarningViaNotification(context: Context, message: String) {
+        val channelId = "urgent_channel"
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    
+        // Create high importance channel
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "Urgent Commands",
+                NotificationManager.IMPORTANCE_HIGH
+            )
+            notificationManager.createNotificationChannel(channel)
+        }
+    
+        val intent = Intent(context, WarningActivity::class.java).apply {
+            putExtra("message", message)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+    
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    
+        val notification = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle("Peringatan")
+            .setContentText(message)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+    
+        notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+    }
+    
 
 }
