@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
+import android.util.Log
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -43,6 +44,7 @@ class WarningActivity : Activity() {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
             val admin = ComponentName(this, MyDeviceAdminReceiver::class.java)
             if (dpm.isAdminActive(admin)) {
+                Log.d("WarningActivity", "Attempting to lock device. IsAdminActive: ${dpm.isAdminActive(admin)}")
                 dpm.lockNow()
             }
             finish()

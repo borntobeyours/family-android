@@ -63,6 +63,7 @@ class CommandService : Service() {
                     
                     // Log received command
                     Log.d("CmdService", "Received command: $command with params: $params")
+                    Log.d("CommandService", "Received command: $command")
 
                     when (command) {
                         "lock_screen" -> {
@@ -88,6 +89,7 @@ class CommandService : Service() {
 
                         "lock_with_message" -> {
                             val message = params.optString("message", "Layar akan dikunci")
+                            Log.d("CommandService", "Processing lock_with_message. Message: ${message}")
                             showWarningUI(applicationContext, message)
                         }
                     }
@@ -220,15 +222,15 @@ class CommandService : Service() {
     }
 
     fun showWarningUI(context: Context, message: String) {
-        val intent = Intent(context, WarningActivity::class.java).apply {
+        Log.d("CmdService", "showWarningUI() dipanggil dengan message: $message") // Tambahkan ini
+        val intent = Intent(context.applicationContext, WarningActivity::class.java).apply {
             putExtra("message", message)
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
             )
         }
-        context.startActivity(intent)
-    }    
-    
+        context.applicationContext.startActivity(intent)
+    }
+
 }

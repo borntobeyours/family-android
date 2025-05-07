@@ -14,6 +14,9 @@
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.DISABLE_KEYGUARD"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
 
 
 
@@ -40,13 +43,11 @@
             </intent-filter>
         </activity>
 
-        <activity android:name=".WarningActivity"
+        <activity
+            android:name=".WarningActivity"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
-            android:excludeFromRecents="true"
-            android:exported="true"
-            android:launchMode="singleTop"
-            android:taskAffinity=""
-            android:showOnLockScreen="true" />
+            android:exported="true" />
+
 
         
         <receiver
