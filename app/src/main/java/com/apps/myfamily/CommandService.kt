@@ -92,7 +92,11 @@ class CommandService : Service() {
                             Log.d("CommandService", "Processing lock_with_message. Message: ${message}")
                             // showWarningUI(applicationContext, message)
                             showWarningViaNotification(applicationContext, message)
+                        }
 
+                        "show_warning_ui" -> {
+                            val message = params.optString("message", "Pesan tidak tersedia")
+                            showWarningUI(applicationContext, message)
                         }
                     }
 
@@ -223,17 +227,15 @@ class CommandService : Service() {
         notificationManager.notify(1, notification)
     }
 
-    fun showWarningUI(context: Context, message: String) {
-        Log.d("CmdService", "showWarningUI() dipanggil dengan message: $message") // Tambahkan ini
-        val intent = Intent(context.applicationContext, WarningActivity::class.java).apply {
+    fun showWarningUI(context: Context, message: String, shouldLock: Boolean = false) {
+        val intent = Intent(context, WarningActivity::class.java).apply {
             putExtra("message", message)
-            addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP
-            )
+            putExtra("should_lock", shouldLock)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
-        context.applicationContext.startActivity(intent)
+        context.startActivity(intent)
     }
+    
 
     private fun showWarningViaNotification(context: Context, message: String) {
         val channelId = "urgent_channel"

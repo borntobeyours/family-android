@@ -29,6 +29,20 @@ class WarningActivity : Activity() {
             LayoutParams.FLAG_TURN_SCREEN_ON
         )
 
+        val shouldLock = intent.getBooleanExtra("should_lock", false)
+
+        if (shouldLock) {
+            Handler(Looper.getMainLooper()).postDelayed({
+                val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                val admin = ComponentName(this, MyDeviceAdminReceiver::class.java)
+                if (dpm.isAdminActive(admin)) {
+                    dpm.lockNow()
+                }
+                finish()
+            }, 10_000)
+        }
+
+
         val textView = TextView(this).apply {
             text = message
             textSize = 22f
