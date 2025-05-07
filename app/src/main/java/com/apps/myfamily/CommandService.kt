@@ -227,14 +227,24 @@ class CommandService : Service() {
         notificationManager.notify(1, notification)
     }
 
-    fun showWarningUI(context: Context, message: String, shouldLock: Boolean = false) {
+    private fun showWarningUI(context: Context, message: String, shouldLock: Boolean = false) {
         val intent = Intent(context, WarningActivity::class.java).apply {
             putExtra("message", message)
             putExtra("should_lock", shouldLock)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TASK
         }
-        context.startActivity(intent)
+    
+        try {
+            context.startActivity(intent)
+            Log.d("CmdService", "Started WarningActivity successfully")
+        } catch (e: Exception) {
+            Log.e("CmdService", "Failed to start WarningActivity: ${e.message}")
+            showWarningViaNotification(context, message)
+        }
     }
+    
     
 
     private fun showWarningViaNotification(context: Context, message: String) {
@@ -274,6 +284,7 @@ class CommandService : Service() {
     
         notificationManager.notify(System.currentTimeMillis().toInt(), notification)
     }
+    
     
 
 }
