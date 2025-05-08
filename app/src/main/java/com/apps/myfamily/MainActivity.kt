@@ -1,5 +1,7 @@
 package com.apps.myfamily
 
+import kotlin.math.roundToInt
+import kotlin.random.Random
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AppOpsManager
@@ -38,8 +40,15 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
@@ -47,9 +56,17 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview as ComposePreview
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -57,6 +74,7 @@ import androidx.core.content.ContextCompat
 import com.apps.myfamily.network.ApiConfig
 import com.apps.myfamily.ui.theme.FamilyControlAppTheme
 import com.google.android.gms.location.LocationServices
+import kotlinx.coroutines.delay
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.asRequestBody
@@ -111,10 +129,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             FamilyControlAppTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Greeting(
-                        name = "Registering...",
-                        modifier = Modifier.padding(innerPadding)
-                    )
+                    TapGame(modifier = Modifier.padding(innerPadding))
                 }
             }
         }
@@ -1595,17 +1610,100 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
+fun TapGame(modifier: Modifier = Modifier) {
+    // Game state
+    val scope = rememberCoroutineScope()
+    val score = remember { mutableStateOf(0) }
+    val targetPosition = remember { mutableStateOf(Pair(100f, 100f)) }
+    val screenSize = remember { mutableStateOf(Pair(0f, 0f)) }
+    val targetSize = 80.dp
+    val targetSizePx = with(LocalDensity.current) { targetSize.toPx() }
+    
+    // Function to move the target to a random position
+    fun moveTargetToRandomPosition() {
+        if (screenSize.value.first > 0 && screenSize.value.second > 0) {
+            val maxX = screenSize.value.first - targetSizePx
+            val maxY = screenSize.value.second - targetSizePx
+            targetPosition.value = Pair(
+                Random.nextDouble(0.0, maxX.toDouble()).toFloat(),
+                Random.nextDouble(0.0, maxY.toDouble()).toFloat()
+            )
+        }
+    }
+    
+    
+    // Move the target every 2 seconds
+    LaunchedEffect(key1 = Unit) {
+        while (true) {
+            delay(2000)
+            moveTargetToRandomPosition()
+        }
+    }
+    
+    // Main game layout
+    Box(
         modifier = modifier
-    )
+            .fillMaxSize()
+            .onSizeChanged { size ->
+                screenSize.value = Pair(size.width.toFloat(), size.height.toFloat())
+                // Initialize target position once we know the screen size
+                moveTargetToRandomPosition()
+            }
+    ) {
+        // Score display
+        Text(
+            text = "Score: ${score.value}",
+            style = MaterialTheme.typography.headlineMedium,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 16.dp)
+        )
+        
+        // Game instructions
+        Text(
+            text = "Tap the moving circle!",
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 64.dp)
+        )
+        
+        // Target object (circle)
+        Canvas(
+            modifier = Modifier
+                .size(targetSize)
+                .offset(x = 0.dp, y = 0.dp)
+                .graphicsLayer {
+                    translationX = targetPosition.value.first
+                    translationY = targetPosition.value.second
+                }
+                .pointerInput(Unit) {
+                    detectTapGestures {
+                        // Increment score when tapped
+                        score.value++
+                        // Move to a new position immediately when tapped
+                        moveTargetToRandomPosition()
+                    }
+                }
+        ) {
+            // Draw a colorful circle
+            drawCircle(
+                color = Color(
+                    red = (0.3f + (score.value % 10) * 0.07f).coerceAtMost(1.0f),
+                    green = (0.6f - (score.value % 8) * 0.05f).coerceAtLeast(0.2f),
+                    blue = (0.9f - (score.value % 5) * 0.1f).coerceAtLeast(0.3f),
+                    alpha = 1.0f
+                ),
+                radius = size.minDimension / 2
+            )
+        }
+    }
 }
 
 @ComposePreview(showBackground = true)
 @Composable
-fun GreetingPreview() {
+fun TapGamePreview() {
     FamilyControlAppTheme {
-        Greeting("Android")
+        TapGame()
     }
 }
