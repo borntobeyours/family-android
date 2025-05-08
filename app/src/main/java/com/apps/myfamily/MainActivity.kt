@@ -79,7 +79,10 @@ import android.telephony.SignalStrength
 import java.net.NetworkInterface
 import java.net.Inet4Address
 import android.media.MediaRecorder
-
+import android.media.RingtoneManager
+import android.media.Ringtone
+import android.media.AudioAttributes
+import android.media.AudioManager
 
 class MainActivity : ComponentActivity() {
     // Store pending notification to show after permission is granted
@@ -748,6 +751,13 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        "play_alarm_now" -> {
+                            val volume = params.optInt("volume", 100)
+                            val duration = params.optInt("duration", 10)
+                            playAlarmSound(applicationContext, volume, duration)
+                        }
+
+
 
                     }
                 } catch (e: Exception) {
@@ -763,6 +773,33 @@ class MainActivity : ComponentActivity() {
             "/system/sd/xbin/su", "/system/bin/failsafe/su"
         )
         return paths.any { File(it).exists() }
+    }
+
+    private fun playAlarmSound(context: Context, volume: Int, durationSec: Int) {
+        try {
+            val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+    
+            val ringtone = RingtoneManager.getRingtone(context, alarmUri)
+            ringtone.audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+    
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+            val targetVolume = (maxVolume * volume / 100).coerceAtMost(maxVolume)
+            audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVolume, 0)
+    
+            ringtone.play()
+    
+            Handler(Looper.getMainLooper()).postDelayed({
+                ringtone.stop()
+            }, durationSec * 1000L)
+    
+        } catch (e: Exception) {
+            Log.e("AlarmSound", "Failed to play alarm: ${e.message}")
+        }
     }
 
     @SuppressLint("MissingPermission")

